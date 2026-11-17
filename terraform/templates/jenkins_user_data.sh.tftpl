@@ -1,0 +1,47 @@
+#!/bin/bash
+set -euxo pipefail
+exec > >(tee -a /var/log/gridsense-jenkins-bootstrap.log) 2>&1
+
+apt-get update
+apt-get install -y ca-certificates curl gnupg fontconfig openjdk-21-jre git openssh-client
+
+# Docker Engine and Compose plugin
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+chmod a+r /etc/apt/keyrings/docker.asc
+. /etc/os-release
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $VERSION_CODENAME stable" > /etc/apt/sources.list.d/docker.list
+apt-get update
+apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+systemctl enable --now docker
+
+# Jenkins LTS
+curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key -o /usr/share/keyrings/jenkins-keyring.asc
+echo "deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/" > /etc/apt/sources.list.d/jenkins.list
+apt-get update
+apt-get install -y jenkins
+usermod -aG docker jenkins
+
+# Node.js 22 for npm test stage
+curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+apt-get install -y nodejs
+
+install -d -m 700 -o jenkins -g jenkins /var/lib/jenkins/.ssh
+cat > /var/lib/jenkins/.ssh/gridsense_deploy_key <<'KEY'
+${deploy_private_key}
+KEY
+chown jenkins:jenkins /var/lib/jenkins/.ssh/gridsense_deploy_key
+chmod 600 /var/lib/jenkins/.ssh/gridsense_deploy_key
+
+cat > /var/lib/jenkins/gridsense-deploy.env <<'DEPLOY'
+APP_HOST=${app_private_ip}
+APP_USER=ubuntu
+APP_PUBLIC_URL=http://${app_public_ip}
+APP_DIR=/opt/gridsense
+DEPLOY
+
+chown jenkins:jenkins /var/lib/jenkins/gridsense-deploy.env
+chmod 600 /var/lib/jenkins/gridsense-deploy.env
+systemctl enable jenkins
+systemctl restart jenkins
+echo "Jenkins host bootstrap complete."
