@@ -1,0 +1,97 @@
+
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '15'))
+    }
+
+    triggers {
+        pollSCM('H/5 * * * *')
+    }
+
+    environment {
+        APP_IMAGE_TAG = "${env.BUILD_NUMBER}"
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+                bat 'git log -1 --oneline'
+            }
+        }
+
+        stage('Pre-flight') {
+            steps {
+                bat 'git --version'
+                bat 'node --version'
+                bat 'docker --version'
+                bat 'docker compose version'
+            }
+        }
+
+        stage('Test Backend') {
+            steps {
+                dir('backend') {
+                    bat 'npm ci'
+                    bat 'npm test --if-present'
+                }
+            }
+        }
+
+        stage('Validate Configuration') {
+            steps {
+                withCredentials([
+                    file(credentialsId: 'gridsense-env',
+                         variable: 'GRID_ENV_FILE')
+                ]) {
+                    bat 'docker compose --env-file "%GRID_ENV_FILE%" config --quiet'
+                }
+            }
+        }
+
+        stage('Build Docker Images') {
+            steps {
+                withCredentials([
+                    file(credentialsId: 'gridsense-env',
+                         variable: 'GRID_ENV_FILE')
+                ]) {
+                    bat 'docker compose --env-file "%GRID_ENV_FILE%" build api web'
+                }
+            }
+        }
+
+        stage('Deploy Locally') {
+            steps {
+                withCredentials([
+                    file(credentialsId: 'gridsense-env',
+                         variable: 'GRID_ENV_FILE')
+                ]) {
+                    bat 'docker compose --env-file "%GRID_ENV_FILE%" up -d mongo api web'
+                    bat 'docker compose --env-file "%GRID_ENV_FILE%" ps'
+                }
+            }
+        }
+
+        stage('Smoke Test') {
+            steps {
+                bat 'curl.exe --retry 10 --retry-delay 3 --retry-connrefused --fail http://localhost:5000/health'
+                bat 'curl.exe --retry 10 --retry-delay 3 --retry-connrefused --fail http://localhost/'
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'GridSense AI local CI/CD deployment successful!'
+        }
+
+        failure {
+            echo 'Pipeline failed. Check Console Output.'
+        }
+    }
+}
